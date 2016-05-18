@@ -9,12 +9,23 @@
 #define BUFFER_SIZE 4096
 #define MAX_ARGS 32
 
+struct command
+{
+  char **argv;
+};
+
 //Assinaturas das funções.
 void prompt();
-void prepareArguments(char *command, char ** arguments);
-void execute(char **arguments);
+void prepareArguments(char *command, char ** args);
+void getCommands(char *command);
+void execute(struct command list[]);
 void handle_signal(int signo);
 int changeDirectory(char* directory);
+void createProcess (int in, int out, struct command *list);
+void executePipes (int n, struct command *list);
+
+int countCommands = 0;
+struct command list[MAX_ARGS];
 
 int main(){
   char command[BUFFER_SIZE];
@@ -37,17 +48,18 @@ int main(){
     	strtok(command, "\n");
     
     	//Separa os argumentos
-    	prepareArguments(command,arguments);
+	getCommands(command);
 
     	//se o comando for 'exit', sai do programa.
-    	if (!strcmp(arguments[0], "exit")) exit(0);
+    	if (!strcmp(list[0].argv[0], "exit")) exit(0);
     
 	//implementação do cd
-	if (!strcmp(arguments[0], "cd")){
-           changeDirectory(arguments[1]);
-        }else
+	if (!strcmp(list[0].argv[0], "cd")){
+           changeDirectory(list[0].argv[1]);
+        }else{
     	//executa o comando
-    	execute(arguments);
+	execute(list);	
+	}
      }
   }while(1);
   
@@ -101,23 +113,45 @@ void prompt(){
 /*
   Função para separa o comando e os argumentos.
 */
-void prepareArguments(char * command, char ** arguments, char ** argumentsArray){
-  while (*command != '\0') 
-  {
-    while (*command == ' ' || *command == '\t' || *command == '\n') 
-      *command++ = '\0';
-
-    *arguments++ = command;
-
-    while (*command != '\0' && *command != ' ' && *command != '\t' && *command != '\n') command++;
-  }
-  *arguments = '\0'; 
+void prepareArguments(char * command, char **args){
+	char *arg;
+	int k = 0;
+	arg = strtok(command," ");
+	while(arg != NULL){
+		args[k] = arg;
+		k++;
+		arg = strtok(NULL," ");
+	}
+}
+/*
+Separa os comandos
+*/
+void getCommands(char *command){
+	char *commands[MAX_ARGS];
+	char **tokens;
+	int i = 0;
+  	char *cmd;
+	cmd = strtok(command,"|");
+	while(cmd != NULL){	
+		commands[i] = cmd;
+		i++;
+		cmd = strtok(NULL,"|");
+	}
+	int j = 0;
+	while(j < i)
+	{
+		tokens = malloc(sizeof(char *[MAX_ARGS]));
+		prepareArguments(commands[j], tokens);
+		list[j].argv = tokens;
+		j++;
+	}
+	countCommands = i;
 }
 
 /*
  Função para executar os comandos.
 */
-void execute(char **arguments, char **argumentsArray){
+void execute(struct command list[]){
   pid_t  pid;
   int    status;
   int	 fd[2];
@@ -125,28 +159,9 @@ void execute(char **arguments, char **argumentsArray){
   if ((pid = fork()) < 0) {
     printf("Runtime Error : Couldn't fork a child process.\n");
     exit(1);
-  } else if (pid == 0) {          
-    /*if (execvp(arguments[0], arguments) < 0) {
-      perror("Error");
-      exit(1);
-    }*/
-      pipe(fd);
-
-	  if(!fork()){
-		dup2(fd[1],1);
-		if (execlp(argumentsArray[0][0], argumentsArray[0],NULL) < 0) {
-	      		perror("Error pipe 1");
-	      		exit(1);
-	    	}
-	  }
-	  
-	  dup2(fd[0], 0);//1 é o identificador do fluxo STDOUT
-	  close(fd[1]);
-	  
-	  if (execlp(argumentsArray[1][0], argumentsArray[1],NULL) < 0) {
-	      perror("Error pipe 2");
-	      exit(1);
-	  }
+  } else if (pid == 0) {   
+    executePipes(countCommands,list);
+    countCommands=0;   
   } else {
     while (wait(&status) != pid);
   }
@@ -174,4 +189,60 @@ int changeDirectory(char* directory){
     }
   }
   return 1;  
+}
+
+/*
+Cria um processo e executa o comando
+*/
+void createProcess (int in, int out, struct command *list)
+{
+  pid_t pid;
+  int status;
+  if ((pid = fork ()) == 0)
+    {
+      if (in != 0)
+        {
+          dup2 (in, 0);
+          close (in);
+        }
+
+      if (out != 1)
+        {
+          dup2 (out, 1);
+          close (out);
+        }
+
+      if(execvp(list->argv[0], (char * const *)list->argv) < 0){
+	perror("Erro ao executar comando");
+	exit(1);	
+	}
+    }
+}
+
+/*
+Executa n pipes, onde n é a quantidade de comandos na lista de comandos list.
+*/
+void executePipes (int n, struct command *list)
+{
+  int i;
+  pid_t pid;
+  int in, fd [2];
+
+  in = 0;
+
+  for (i = 0; i < n - 1; ++i)
+    {
+      pipe (fd);
+      createProcess(in, fd [1], list + i);
+      close (fd [1]);
+      in = fd [0];
+    }
+
+  if (in != 0)
+    dup2 (in, 0);
+
+  if(execvp(list[i].argv[0], (char * const *)list[i].argv) < 0){
+	perror("Erro ao executar comando");
+	exit(1);
+  }
 }
